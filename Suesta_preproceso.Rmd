@@ -1,0 +1,527 @@
+---
+title: "A2 — Análisis descriptivo e inferencial"
+author: "Víctor Suesta Arribas"
+output: html_document
+fontsize: 11pt
+---
+
+```{r setup, include=FALSE}
+# librerias
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+  library(readxl)
+  library(janitor)
+})
+
+# cargo el excel y dejo nombres en snake_case
+ruta <- "WorldSustainabilityDS_clean.xlsx"
+df <- readxl::read_excel(ruta) |> janitor::clean_names()
+
+# renombro las 3 variables que pide el enunciado (para leer mejor)
+df <- df |>
+  dplyr::rename(
+    LE   = sp_dyn_le00_in,     
+    GINI = si_pov_gini,        
+    FOR  = ny_adj_dfor_gn_zs   
+  )
+
+# helper para colapsar income en 2 grupos
+to_hi_other <- function(income_chr) {
+  ifelse(income_chr == "High income", "High income", "Other")
+}
+``` 
+
+
+
+
+
+
+## PR1
+**Pregunta:** ¿La esperanza de vida es mayor en los países con alto nivel de ingresos que en el resto?
+
+**1.2 Hipótesis.**  
+H0: μ_high = μ_other  
+H1: μ_high > μ_other (unilateral derecha). Muestra: año 2018.
+
+**1.3 Test (justificación).**  
+Comparo **dos medias** en muestras **independientes** con varianzas **desconocidas** (y posiblemente distintas) → **t de Welch** (dos muestras). Luego verifico con desarrollo propio usando `qt/pt`.
+
+```{r pr1-datos}
+# 1.4 Datos temporales de 2018 y agrupación High income vs Other
+pr1 <- df |>
+  dplyr::filter(year == 2018) |>
+  dplyr::select(country, region, income, LE) |>
+  tidyr::drop_na(LE, income) |>
+  dplyr::mutate(
+    grupo = factor(to_hi_other(income), levels = c("Other","High income"))
+  )
+
+# resúmenes cortos
+summary(pr1$LE)
+table(pr1$grupo)
+```
+
+```{r pr1-boxplot, fig.height=3.2}
+# Gráfico descriptivo
+ggplot(pr1, aes(x = grupo, y = LE)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "Life expectancy (LE)",
+       title = "LE (2018): High income vs Other")
+```
+
+```{r pr1-test-libreria}
+# 1.4 Aplicación con librería Con niveles c("Other","High income")
+t_lib <- t.test(LE ~ grupo, data = pr1, alternative = "less")
+t_lib
+```
+
+```{r pr1-fn-manual}
+# 1.5 t de Welch (dos muestras independientes)
+t_indep_manual <- function(x, g) {
+  g <- factor(g, levels = c("Other","High income")) 
+  x1 <- x[g == "High income"]; x2 <- x[g == "Other"]
+  n1 <- length(x1); n2 <- length(x2)
+  m1 <- mean(x1);   m2 <- mean(x2)
+  s1 <- var(x1);    s2 <- var(x2)
+  t_obs <- (m1 - m2) / sqrt(s1/n1 + s2/n2)
+  df_w  <- (s1/n1 + s2/n2)^2 / ((s1^2)/(n1^2*(n1-1)) + (s2^2)/(n2^2*(n2-1)))
+  list(t_obs = t_obs, df = df_w, m1 = m1, m2 = m2, n1 = n1, n2 = n2)
+}
+```
+
+```{r pr1-test-manual}
+# 1.5 Verificación con mi función + p-valor con pt (unilateral derecha)
+man <- t_indep_manual(pr1$LE, pr1$grupo)
+p_manual <- 1 - pt(man$t_obs, df = man$df)
+
+# 1.6 Resultados 
+res_tab <- data.frame(
+  grupo = c("High income","Other"),
+  n     = c(man$n1, man$n2),
+  media = c(man$m1, man$m2)
+)
+print(res_tab, row.names = FALSE)
+
+diff_obs <- man$m1 - man$m2  
+cat(sprintf("Diferencia observada (High - Other) = %.2f\n", diff_obs))
+cat(sprintf("t = %.3f, gl = %.1f, p = %.4f\n", man$t_obs, man$df, p_manual))
+
+# 1.7 Interpretación
+if (p_manual < 0.05) {
+  cat("Conclusión: rechazo H0. Evidencia de LE mayor en High income (NC=95%).\n")
+} else {
+  cat("Conclusión: no rechazo H0 con α = 0.05.\n")
+}
+```
+
+
+
+
+
+
+
+## PR2
+**pregunta:** ¿La desigualdad se reduce en un período de 10 años?
+
+**2.2 Hipótesis.**  
+H0: μ_dif = 0  
+H1: μ_dif < 0, con dif = GINI_2018 − GINI_2008 (reducción).
+
+**2.3 Test (justificación).**  
+Comparamos el **mismo país** en 2008 y 2018 → **t de Student apareado**. La alternativa es *less* porque esperamos **2018 < 2008**.
+ 
+
+```{r pr2-datos}
+# preparo pares por país y quito NA de GINI
+pr2 <- df |>
+  dplyr::filter(year %in% c(2008, 2018)) |>
+  dplyr::select(country, region, year, GINI) |>
+  tidyr::drop_na(GINI)
+
+# mundo: formato ancho con países que tienen ambos años
+wide_mundo <- pr2 |>
+  dplyr::select(country, year, GINI) |>
+  tidyr::pivot_wider(names_from = year, values_from = GINI) |>
+  tidyr::drop_na(`2008`, `2018`) |>
+  dplyr::rename(gini_2008 = `2008`, gini_2018 = `2018`)
+
+# región: filtro antes de pivotar (así evito joins)
+wide_reg <- pr2 |>
+  dplyr::filter(region == "Europe and Northern America") |>
+  dplyr::select(country, year, GINI) |>
+  tidyr::pivot_wider(names_from = year, values_from = GINI) |>
+  tidyr::drop_na(`2008`, `2018`) |>
+  dplyr::rename(gini_2008 = `2008`, gini_2018 = `2018`)
+
+# mini-chequeo
+cat("n pares mundo =", nrow(wide_mundo), "\n")
+cat("n pares región =", nrow(wide_reg), "\n")
+```
+
+```{r pr2-boxplots, fig.height=3.2}
+# 2.1 boxplots mundo y región por año
+ggplot(pr2, aes(x = factor(year), y = GINI)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "GINI", title = "GINI: 2008 vs 2018 (Mundo)")
+
+ggplot(dplyr::filter(pr2, region == "Europe and Northern America"),
+       aes(x = factor(year), y = GINI)) +
+  geom_boxplot() +
+  labs(x = NULL, y = "GINI", title = "GINI: 2008 vs 2018 (Europe & Northern America)")
+```
+
+```{r pr2-tops}
+# 2.1 tablas top-5 y bottom-5 (mundo y región)
+top_bot <- function(d, y, k = 5){
+  dd <- d |>
+    dplyr::filter(year == y) |>
+    dplyr::arrange(dplyr::desc(GINI))
+  list(
+    top5    = head(dplyr::select(dd, country, GINI), k),
+    bottom5 = head(dplyr::select(dplyr::arrange(dd, GINI), country, GINI), k)
+  )
+}
+
+cat("MUNDO 2008 - TOP5\n")
+knitr::kable(top_bot(pr2, 2008)$top5, digits = 2)
+cat("MUNDO 2008 - BOTTOM5\n")
+knitr::kable(top_bot(pr2, 2008)$bottom5, digits = 2)
+cat("MUNDO 2018 - TOP5\n")
+knitr::kable(top_bot(pr2, 2018)$top5, digits = 2)
+cat("MUNDO 2018 - BOTTOM5\n")
+knitr::kable(top_bot(pr2, 2018)$bottom5, digits = 2)
+
+pr2_reg <- dplyr::filter(pr2, region == "Europe and Northern America")
+cat("\nREGIÓN 2008 - TOP5\n")
+knitr::kable(top_bot(pr2_reg, 2008)$top5, digits = 2)
+cat("REGIÓN 2008 - BOTTOM5\n")
+knitr::kable(top_bot(pr2_reg, 2008)$bottom5, digits = 2)
+cat("REGIÓN 2018 - TOP5\n")
+knitr::kable(top_bot(pr2_reg, 2018)$top5, digits = 2)
+cat("REGIÓN 2018 - BOTTOM5\n")
+knitr::kable(top_bot(pr2_reg, 2018)$bottom5, digits = 2)
+```
+
+```{r pr2-test-libreria}
+# 2.4 aplicación con librería: t apareado (2018 vs 2008), alternativa 'less'
+t_mundo <- t.test(wide_mundo$gini_2018, wide_mundo$gini_2008,
+                  paired = TRUE, alternative = "less")
+t_reg   <- t.test(wide_reg$gini_2018,   wide_reg$gini_2008,
+                  paired = TRUE, alternative = "less")
+
+t_mundo
+t_reg
+```
+
+```{r pr2-fn-manual}
+# 2.5 t apareado
+t_paired_manual <- function(y1, y2, side=c("two.sided","less","greater")){
+  d <- y2 - y1
+  n <- length(d)
+  md <- mean(d); sd_d <- sd(d)
+  t_obs <- md / (sd_d/sqrt(n))
+  side <- match.arg(side)
+  p <- switch(side,
+              "two.sided" = 2*pt(-abs(t_obs), df=n-1),
+              "less"      = pt(t_obs, df=n-1),
+              "greater"   = 1-pt(t_obs, df=n-1))
+  list(t_obs=t_obs, df=n-1, md=md, n=n, p=p)
+}
+```
+
+```{r pr2-test-manual}
+# 2.5 verificación: d = 2018 - 2008, buscamos d < 0 -> "less"
+m_m <- t_paired_manual(wide_mundo$gini_2008, wide_mundo$gini_2018, side = "less")
+m_r <- t_paired_manual(wide_reg$gini_2008,   wide_reg$gini_2018,   side = "less")
+
+list(mundo = m_m, region = m_r)
+```
+
+```{r pr2-resumen}
+# 2.6 resultados: medias 2008/2018 + dif (2018-2008) + t + gl + p
+med_m_2008 <- mean(wide_mundo$gini_2008); med_m_2018 <- mean(wide_mundo$gini_2018)
+med_r_2008 <- mean(wide_reg$gini_2008);   med_r_2018 <- mean(wide_reg$gini_2018)
+
+cat(sprintf("Mundo:  media_2008 = %.2f, media_2018 = %.2f, dif = %.2f, t = %.3f, gl = %d, p = %.4f\n",
+            med_m_2008, med_m_2018, m_m$md, m_m$t_obs, m_m$df, m_m$p))
+cat(sprintf("Región: media_2008 = %.2f, media_2018 = %.2f, dif = %.2f, t = %.3f, gl = %d, p = %.4f\n",
+            med_r_2008, med_r_2018, m_r$md, m_r$t_obs, m_r$df, m_r$p))
+
+# 2.7 interpretación
+if (m_m$p < 0.05) {
+  cat("Conclusión (mundo): rechazamos H0 → evidencia de reducción del GINI.\n")
+} else {
+  cat("Conclusión (mundo): no rechazamos H0 con α = 0.05.\n")
+}
+
+if (m_r$p < 0.05) {
+  cat("Conclusión (región): rechazamos H0 → evidencia de reducción del GINI.\n")
+} else {
+  cat("Conclusión (región): no rechazamos H0 con α = 0.05.\n")
+}
+```
+
+
+
+
+
+
+
+
+## PR3
+**Pregunta:** ¿La proporción de países con mayor desigualdad es diferente entre los países con régimen democrático y aquellos con régimen autocrático?
+
+**3.2 Hipótesis.**  
+H0: p_dem = p_aut  
+H1: p_dem ≠ p_aut  
+(donde p_dem y p_aut son las proporciones de países con **GINI > 40** en 2018 en democracias y autocracias).
+
+**3.3 Test (justificación).**  
+Comparamos dos **proporciones** independientes → **contraste z de dos proporciones** (bilateral). Verificamos con `prop.test` y con desarrollo propio usando `pnorm`.
+ 
+
+```{r pr3-datos}
+# 3.1 Preparación (muestra 2018, solo columnas necesarias, sin NA)
+pr3 <- df |>
+  dplyr::filter(year == 2018) |>
+  dplyr::select(country, regime, GINI) |>
+  tidyr::drop_na(regime, GINI) |>
+  dplyr::mutate(
+    high_inequality = as.integer(GINI > 40),
+    regime2 = ifelse(grepl("Democ", regime, ignore.case = TRUE), "Democracy", "Autocracy"),
+    regime2 = factor(regime2, levels = c("Democracy","Autocracy"))
+  )
+
+# Tabla de proporciones por régimen
+tab <- pr3 |>
+  dplyr::group_by(regime2) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    x = sum(high_inequality),
+    p_hat = x / n,
+    .groups = "drop"
+  )
+
+# tabla de proporción observada
+knitr::kable(tab, digits = 3)
+
+# Tabla 2x2 de conteos
+table(pr3$regime2, pr3$high_inequality)
+```
+
+```{r pr3-plot, fig.height=3}
+# 3.1 Gráfico de proporciones observadas
+ggplot(tab, aes(x = regime2, y = p_hat)) +
+  geom_col() +
+  geom_text(aes(label = sprintf("%.2f", p_hat)), vjust = -0.5) +
+  ylim(0, 1) +
+  labs(x = NULL, y = "Proporción GINI > 40",
+       title = "GINI>40 por régimen (2018)")
+```
+
+```{r pr3-test-libreria}
+# 3.4 Aplicación con librería
+x <- tab$x
+n <- tab$n
+prop_lib <- prop.test(x = x, n = n, alternative = "two.sided", correct = FALSE)
+prop_lib
+```
+
+```{r pr3-fn-manual}
+# 3.5 z con p combinada
+prop2_manual <- function(x1, n1, x2, n2, side = c("two.sided","less","greater")){
+  p_hat <- (x1 + x2) / (n1 + n2)                       
+  z_obs <- (x1/n1 - x2/n2) / sqrt(p_hat * (1 - p_hat) * (1/n1 + 1/n2))
+  side <- match.arg(side)
+  p <- switch(side,
+              "two.sided" = 2*pnorm(-abs(z_obs)),
+              "less"      = pnorm(z_obs),
+              "greater"   = 1 - pnorm(z_obs))
+  list(z_obs = z_obs,
+       p = p,
+       p1 = x1/n1,
+       p2 = x2/n2,
+       n1 = n1, n2 = n2)
+}
+```
+
+```{r pr3-test-manual}
+# 3.5 Verificación (bilateral)
+pm <- prop2_manual(
+  x1 = tab$x[tab$regime2 == "Democracy"], n1 = tab$n[tab$regime2 == "Democracy"],
+  x2 = tab$x[tab$regime2 == "Autocracy"],  n2 = tab$n[tab$regime2 == "Autocracy"],
+  side = "two.sided"
+)
+
+# 3.6 Resultados (valores calculados, valor observado, estadístico, p)
+diff_obs <- pm$p1 - pm$p2  
+res_tab <- data.frame(
+  grupo = c("Democracy","Autocracy"),
+  n = c(pm$n1, pm$n2),
+  x = c(round(pm$p1*pm$n1), round(pm$p2*pm$n2)),
+  prop = c(pm$p1, pm$p2)
+)
+knitr::kable(res_tab, digits = 3)
+
+cat(sprintf("Valor observado (p_dem - p_aut) = %.3f\n", diff_obs))
+cat(sprintf("z = %.3f, p = %.4f (bilateral)\n", pm$z_obs, pm$p))
+
+# 3.7 Interpretación
+if (pm$p < 0.05) {
+  cat("Conclusión: rechazo H0 → la proporción de GINI>40 difiere entre regímenes.\n")
+} else {
+  cat("Conclusión: no rechazo H0 con α = 0.05.\n")
+}
+```
+
+
+
+
+
+
+
+## PR4
+**Pregunta:** ¿La proporción de países que cumplen con el objetivo de no agotamiento neto de bosques es mayor que 50 %?
+
+**4.2 Hipótesis.**  
+H0: p = 0.5  
+H1: p > 0.5, donde p es la proporción de países con **FOR ≤ 0** en 2018.
+
+**4.3 Test (justificación).**  
+Se contrasta **una proporción** frente a un valor **p0 = 0.5** → **test z de una proporción** (unilateral derecha). Verifico con `prop.test` y con desarrollo propio usando `pnorm`.
+ 
+
+```{r pr4-datos}
+# 4.1 Datos 2018 y variable binaria de "no agotamiento" (éxito = 1 si FOR ≤ 0)
+pr4 <- df |>
+  dplyr::filter(year == 2018) |>
+  dplyr::select(country, FOR) |>
+  tidyr::drop_na(FOR) |>
+  dplyr::mutate(no_agotamiento = as.integer(FOR <= 0))
+
+# conteos básicos
+n  <- nrow(pr4)
+x  <- sum(pr4$no_agotamiento)
+ph <- x / n
+
+# chequeo rapido
+data.frame(n_total = n, exitos = x, ph_observada = ph)
+```
+
+```{r pr4-plot, fig.height=3}
+# 4.1 Gráfico: barra con la proporción observada y línea en 0.5
+ggplot(data.frame(grupo = "2018", ph = ph), aes(x = grupo, y = ph)) +
+  geom_col(width = 0.5) +
+  geom_hline(yintercept = 0.5, linetype = 2) +
+  geom_text(aes(label = sprintf("%.2f", ph)), vjust = -0.5) +
+  ylim(0, 1) +
+  labs(x = NULL, y = "Proporción FOR ≤ 0",
+       title = "Proporción de países con FOR ≤ 0 (2018)")
+```
+
+```{r pr4-test-libreria}
+# 4.4 1 proporción vs p0=0.5 (unilateral derecha)
+prop1_lib <- prop.test(x = x, n = n, p = 0.5,
+                       alternative = "greater", correct = FALSE)
+prop1_lib
+```
+
+```{r pr4-fn-manual}
+# 4.5 z con p0
+prop1_manual <- function(x, n, p0 = 0.5, side = c("two.sided","less","greater")){
+  ph <- x / n
+  z_obs <- (ph - p0) / sqrt(p0 * (1 - p0) / n)
+  side <- match.arg(side)
+  p <- switch(side,
+              "two.sided" = 2*pnorm(-abs(z_obs)),
+              "less"      = pnorm(z_obs),
+              "greater"   = 1 - pnorm(z_obs))
+  list(z_obs = z_obs, p = p, ph = ph, n = n, p0 = p0)
+}
+```
+
+```{r pr4-test-manual}
+# 4.5 Verificación (unilateral)
+pm1 <- prop1_manual(x = x, n = n, p0 = 0.5, side = "greater")
+pm1  
+```
+
+```{r pr4-resumen}
+# 4.6 Resultados: valor mostral, estadístico observado y p-valor
+cat(sprintf("Proporción muestral (ph) = %.3f (x=%d, n=%d)\n", pm1$ph, x, n))
+cat(sprintf("Estadístico observado z = %.3f\n", pm1$z_obs))
+cat(sprintf("p-valor (unilateral > 0.5) = %.4f\n", pm1$p))
+
+# 4.7 Interpretación (α = 0.05)
+if (pm1$p < 0.05) {
+  cat("Conclusión: rechazo H0 → evidencia de que la proporción de FOR ≤ 0 es > 50%.\n")
+} else {
+  cat("Conclusión: no rechazo H0 con α = 0.05.\n")
+}
+```
+
+
+
+
+
+
+
+## 5. Tabla final de conclusiones (PR1–PR4)
+**Resumen:** test aplicado, estadístico, gl (si aplica), *p* y conclusión (NC 95 %).
+
+```{r resumen-final-tabla}
+
+resumen <- tibble::tibble(
+  PR        = c("PR1", "PR2-mundo", "PR2-región", "PR3", "PR4"),
+  Pregunta  = c(
+    "¿LE mayor en High income?",
+    "¿GINI 2018 < 2008 (mundo)?",
+    "¿GINI 2018 < 2008 (Europe & N. America)?",
+    "¿p(GINI>40) difiere entre regímenes?",
+    "¿p(FOR ≤ 0) > 0.5?"
+  ),
+  Test      = c(
+    "t de Welch (2 ind., >)",
+    "t apareado (<)",
+    "t apareado (<)",
+    "2 proporciones (bilateral)",
+    "1 proporción (> 0.5)"
+  ),
+  Estadistico = c(
+    sprintf("t=%.3f (gl≈%.1f)", man$t_obs, man$df),
+    sprintf("t=%.3f (gl=%d)",   m_m$t_obs, m_m$df),
+    sprintf("t=%.3f (gl=%d)",   m_r$t_obs, m_r$df),
+    sprintf("z=%.3f",           pm$z_obs),
+    sprintf("z=%.3f",           pm1$z_obs)
+  ),
+  p_value = c(
+    sprintf("%.4f", p_manual),
+    sprintf("%.4f", m_m$p),
+    sprintf("%.4f", m_r$p),
+    sprintf("%.4f", pm$p),
+    sprintf("%.4f", pm1$p)
+  ),
+  Conclusión = c(
+    ifelse(p_manual < 0.05, "Rechazo H0: LE mayor en High income", "No rechazo H0"),
+    ifelse(m_m$p     < 0.05, "Rechazo H0: GINI ↓ (mundo)",         "No rechazo H0"),
+    ifelse(m_r$p     < 0.05, "Rechazo H0: GINI ↓ (región)",        "No rechazo H0"),
+    ifelse(pm$p      < 0.05, "Rechazo H0: proporciones distintas", "No rechazo H0"),
+    ifelse(pm1$p     < 0.05, "Rechazo H0: p(FOR≤0) > 0.5",         "No rechazo H0")
+  )
+)
+
+resumen
+```
+
+```{r resumen-final-kable}
+# tabla para el informe
+knitr::kable(
+  resumen,
+  digits = 3,
+  caption = "Resumen PR1–PR4 (NC 95 %)"
+)
+```
+
+
+
