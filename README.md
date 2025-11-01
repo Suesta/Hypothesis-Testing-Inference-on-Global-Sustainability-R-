@@ -4,7 +4,7 @@
 
 ---
 
-## Highlights (for recruiters)
+## Highlights
 
 * Clear end-to-end **R workflow**: data prep → descriptives → **Welch t-test**, **paired t-test**, **two-proportion test**, **one-proportion test** → concise, interpretable conclusions.
 * Reproducible RMarkdown (`Suesta_preproceso.Rmd`) with both **library** and **manual derivations** (z/t computed by hand for verification).
